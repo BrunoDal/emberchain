@@ -2,10 +2,14 @@
   "name": "Emberchain Auto-Battle",
   "short_name": "Emberchain",
   "description": "Construis ta séquence. Laisse le feu parler.",
-  "start_url": "/",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#0b0b14",
   "theme_color": "#0b0b14",
   "orientation": "portrait",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "lang": "fr",
+  "dir": "ltr",
+  "icons": [{ "src": "./icon.svg", "sizes": "128x128", "type": "image/svg+xml", "purpose": "any maskable" }]
 }

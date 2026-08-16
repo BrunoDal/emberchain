@@ -9,4 +9,12 @@ createRoot(document.getElementById("root")!).render(
   </React.StrictMode>,
 );
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+const baseUrl = import.meta.env.BASE_URL;
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register(`${baseUrl}sw.js`, {
+      scope: baseUrl,
+    });
+  });
+}
