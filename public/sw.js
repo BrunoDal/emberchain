@@ -1,10 +1,10 @@
-const VERSION = "v5";
+const VERSION = "v9";
 const SHELL_CACHE = `emberchain-shell-${VERSION}`;
 const RUNTIME_CACHE = `emberchain-runtime-${VERSION}`;
 const scopeUrl = new URL("./", self.registration.scope);
 const withinScope = (url) => url.origin === scopeUrl.origin && url.href.startsWith(scopeUrl.href);
 const appUrl = (path) => new URL(path, scopeUrl).href;
-const shell = ["./", "./index.html", "./manifest.webmanifest", "./icon.svg", "./assets/ember-knight.png"];
+const shell = ["./", "./index.html", "./manifest.webmanifest", "./icon.svg", "./assets/ember-knight.png", "./assets/forge-arena-v2.png", "./assets/goblin-raider-v2.png", "./assets/cards-fire-atlas.png", "./assets/cards-attack-atlas.png", "./assets/cards-support-atlas.png", "./assets/cards-equipment-atlas.png"];
 
 const precacheGeneratedAssets = async (cache) => {
   const indexUrl = appUrl("./index.html");
@@ -46,7 +46,7 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET" || !withinScope(new URL(request.url))) return;
 
   event.respondWith((async () => {
-    const cached = await caches.match(request);
+    const cached = await caches.match(request, { ignoreVary: true });
 
     if (request.mode === "navigate") {
       try {
@@ -71,7 +71,7 @@ self.addEventListener("fetch", (event) => {
       }
       return response;
     } catch {
-      return caches.match(appUrl("./"));
+      return Response.error();
     }
   })());
 });

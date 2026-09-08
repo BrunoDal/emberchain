@@ -55,10 +55,13 @@ export interface EnemyState {
   title: string;
   burn: number;
   marked: boolean;
+  intent: "raid" | "drain" | "heavy" | "frenzy" | "mirror" | "pierce" | "boss";
+  intentLabel: string;
 }
 
 export type CombatEventType =
   | "cardPlayed"
+  | "enemyWindup"
   | "sequenceLoop"
   | "damage"
   | "heal"
@@ -70,6 +73,7 @@ export type CombatEventType =
 
 export interface CombatEvent {
   id: string;
+  round: number;
   type: CombatEventType;
   sourceId?: string;
   targetId?: string;
@@ -132,6 +136,7 @@ export interface RunState {
 export type GameAction =
   | { type: "DRAW_CARD" }
   | { type: "CHOOSE_CARD"; action: CardChoiceAction; targetUid?: string }
+  | { type: "SKIP_CARD" }
   | { type: "REORDER_CARDS"; order: string[] }
   | { type: "START_COMBAT" }
   | { type: "ADVANCE_COMBAT" }
@@ -165,22 +170,49 @@ export const CARD_DEFINITIONS: CardDefinition[] = [
 const cardMap = new Map(CARD_DEFINITIONS.map((card) => [card.id, card]));
 export const getCardDefinition = (id: string) => cardMap.get(id) ?? CARD_DEFINITIONS[0];
 
+export function getCardEffectLabel(cardId: string, level = 1): string {
+  const definition = getCardDefinition(cardId);
+  const effects: Record<string, string> = {
+    "ember-brand": "Marque · +15 dégâts préparés",
+    strike: "ATK + 24 · avant Défense",
+    fireball: `31 + 55% ATK · brûlure ${2 + level}`,
+    guard: level >= 3 ? "25 + 150% DEF · bouclier + soin" : "25 + 150% DEF · bouclier",
+    rage: level >= 2 ? "+70% à la prochaine attaque" : "+35% à la prochaine attaque",
+    "double-slash": level >= 3 ? "3 × (ATK + 8) dégâts" : "2 × (ATK + 8) dégâts",
+    mend: "27 + DEF PV récupérés",
+    "burning-edge": `ATK + 18 · brûlure ${3 + level}`,
+    "berserker-blade": "Critiques base ×1,8 · +30% critique",
+    "cinder-amulet": "+20% dégâts de feu",
+    "royal-aegis": "+30% boucliers",
+    "crit-sigil": "+12% critique",
+    meteor: `53 + 80% ATK · brûlure ${3 + level}`,
+    "ember-surge": `24 + 45% ATK · brûlure ${2 + level}`,
+    "piercing-lunge": "ATK + 30 · 95% Défense ignorée",
+    execution: "ATK + 25 · ×1,7 sous 40% PV",
+    "flame-core": "+30% dégâts de feu",
+    "duelist-glove": "+8% critique · combos +15%",
+    "fortress-heart": "+50% boucliers",
+    "blood-oath": "+25% attaques sous 50% PV",
+  };
+  return effects[cardId] ?? definition.description;
+}
+
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const owned = (cardId: string, level = 1): OwnedCard => ({ uid: uid(), cardId, level });
 
 export function createEnemy(wave: number): EnemyState {
   const boss = wave % 5 === 0;
   const variants = [
-    { id: "cinderling", name: "Gobelame", kind: "goblin" as const, icon: "👺", title: "Pillard des cendres", hp: 220, attack: 13, defense: 3 },
-    { id: "ash-priest", name: "Prêtre cendré", kind: "cultist" as const, icon: "☠", title: "Adepte du brasier", hp: 260, attack: 16, defense: 5 },
-    { id: "basalt-brute", name: "Brute basaltique", kind: "golem" as const, icon: "🗿", title: "Poids de la montagne", hp: 310, attack: 19, defense: 10 },
-    { id: "night-hound", name: "Limier nocturne", kind: "beast" as const, icon: "🐺", title: "Chasseur sans lune", hp: 290, attack: 22, defense: 4 },
-    { id: "mirror-witch", name: "Sorcière miroir", kind: "witch" as const, icon: "🪞", title: "Reflet de la faille", hp: 320, attack: 18, defense: 8 },
-    { id: "iron-mantis", name: "Mante de fer", kind: "assassin" as const, icon: "🦂", title: "Lame mécanique", hp: 340, attack: 25, defense: 7 },
+    { id: "cinderling", name: "Gobelame", kind: "goblin" as const, icon: "👺", title: "Pillard des cendres", hp: 220, attack: 13, defense: 3, intent: "raid" as const, intentLabel: "Raid rapide · attaque normale" },
+    { id: "ash-priest", name: "Prêtre cendré", kind: "cultist" as const, icon: "☠", title: "Adepte du brasier", hp: 260, attack: 16, defense: 5, intent: "drain" as const, intentLabel: "Siphon · se soigne après sa frappe" },
+    { id: "basalt-brute", name: "Brute basaltique", kind: "golem" as const, icon: "🗿", title: "Poids de la montagne", hp: 310, attack: 19, defense: 10, intent: "heavy" as const, intentLabel: "Impact lourd · +35% dégâts" },
+    { id: "night-hound", name: "Limier nocturne", kind: "beast" as const, icon: "🐺", title: "Chasseur sans lune", hp: 290, attack: 22, defense: 4, intent: "frenzy" as const, intentLabel: "Frénésie · plus dangereux à mi-PV" },
+    { id: "mirror-witch", name: "Sorcière miroir", kind: "witch" as const, icon: "🪞", title: "Reflet de la faille", hp: 320, attack: 18, defense: 8, intent: "mirror" as const, intentLabel: "Décharge miroir · +15% dégâts" },
+    { id: "iron-mantis", name: "Mante de fer", kind: "assassin" as const, icon: "🦂", title: "Lame mécanique", hp: 340, attack: 25, defense: 7, intent: "pierce" as const, intentLabel: "Percée · ignore 70% de Défense" },
   ];
   const bosses = [
-    { id: "ember-warden", name: "Gardien de braise", kind: "boss" as const, icon: "♜", title: "Boss de la forge oubliée", hp: 400, attack: 27, defense: 13 },
-    { id: "flame-queen", name: "Reine des flammes", kind: "boss" as const, icon: "♛", title: "Souveraine du cratère", hp: 460, attack: 30, defense: 15 },
+    { id: "ember-warden", name: "Gardien de braise", kind: "boss" as const, icon: "♜", title: "Boss de la forge oubliée", hp: 400, attack: 27, defense: 13, intent: "boss" as const, intentLabel: "Écrasement · +45% dégâts" },
+    { id: "flame-queen", name: "Reine des flammes", kind: "boss" as const, icon: "♛", title: "Souveraine du cratère", hp: 460, attack: 30, defense: 15, intent: "boss" as const, intentLabel: "Déluge de feu · +45% dégâts" },
   ];
   const base = boss ? bosses[(Math.floor(wave / 5) - 1) % bosses.length] : variants[(wave - 1) % variants.length];
   const scale = 1 + Math.max(0, wave - 1) * 0.1;
@@ -232,8 +264,8 @@ const upgradeOptions = (): UpgradeChoice[] => [
   { id: "capacity", label: "Lien supplémentaire", detail: "+1 emplacement de carte", icon: "＋" },
 ];
 
-function snapshot(event: Omit<CombatEvent, "heroHpAfter" | "enemyHpAfter" | "heroShieldAfter" | "enemyBurnAfter" | "enemyMarkedAfter" | "heroRageAfter">, hero: HeroState, enemy: EnemyState): CombatEvent {
-  return { ...event, heroHpAfter: Math.max(0, Math.round(hero.hp)), enemyHpAfter: Math.max(0, Math.round(enemy.hp)), heroShieldAfter: Math.max(0, Math.round(hero.shield)), enemyBurnAfter: enemy.burn, enemyMarkedAfter: enemy.marked, heroRageAfter: hero.rage };
+function snapshot(event: Omit<CombatEvent, "round" | "heroHpAfter" | "enemyHpAfter" | "heroShieldAfter" | "enemyBurnAfter" | "enemyMarkedAfter" | "heroRageAfter">, hero: HeroState, enemy: EnemyState, round: number): CombatEvent {
+  return { ...event, round, heroHpAfter: Math.max(0, Math.round(hero.hp)), enemyHpAfter: Math.max(0, Math.round(enemy.hp)), heroShieldAfter: Math.max(0, Math.round(hero.shield)), enemyBurnAfter: enemy.burn, enemyMarkedAfter: enemy.marked, heroRageAfter: hero.rage };
 }
 
 function buildCombatPlan(run: RunState): CombatPlan {
@@ -250,17 +282,17 @@ function buildCombatPlan(run: RunState): CombatPlan {
   const combatId = () => `${events.length}-${Math.random().toString(36).slice(2, 5)}`;
   let combo = 0;
 
-  const push = (event: Omit<CombatEvent, "id" | "heroHpAfter" | "enemyHpAfter" | "heroShieldAfter" | "enemyBurnAfter" | "enemyMarkedAfter" | "heroRageAfter">) => events.push(snapshot({ ...event, id: combatId() }, hero, enemy));
+  const push = (event: Omit<CombatEvent, "id" | "round" | "heroHpAfter" | "enemyHpAfter" | "heroShieldAfter" | "enemyBurnAfter" | "enemyMarkedAfter" | "heroRageAfter">) => events.push(snapshot({ ...event, id: combatId() }, hero, enemy, run.round));
   const damageEnemy = (base: number, tags: string[], source: string, cardUid?: string) => {
     const fire = tags.includes("fire");
     const crit = Math.random() < critChance;
-    const rageMultiplier = hero.rage > 0 ? 1.35 : 1;
+    const rageMultiplier = 1 + hero.rage * 0.35;
     const bloodOathMultiplier = has("blood-oath") && hero.hp <= hero.maxHp * 0.5 ? 1.25 : 1;
     const defenseMultiplier = tags.includes("piercing") ? 0.05 : 0.35;
     const executeMultiplier = tags.includes("execute") && enemy.hp <= enemy.maxHp * 0.4 ? 1.7 : 1;
     const comboMultiplier = has("duelist-glove") && combo >= 2 ? 1.15 : 1;
     let amount = Math.max(1, Math.round((base * (fire ? fireMultiplier : 1) * rageMultiplier * bloodOathMultiplier * executeMultiplier * comboMultiplier) - enemy.defense * defenseMultiplier));
-    if (crit) amount = Math.round(amount * (has("berserker-blade") ? 1.3 : 1.8));
+    if (crit) amount = Math.round(amount * 1.8 * (has("berserker-blade") ? 1.3 : 1));
     hero.rage = 0;
     enemy.hp -= amount;
     combo += 1;
@@ -304,14 +336,19 @@ function buildCombatPlan(run: RunState): CombatPlan {
           break;
         case "guard":
           shieldHero((25 + hero.defense * 1.5) * power, card.cardId, card.uid);
+          if (card.level >= 3) healHero(Math.round(8 * power), card.cardId, card.uid);
           break;
         case "rage":
-          hero.rage = 1;
-          push({ type: "statusApplied", sourceId: card.cardId, targetId: "hero", message: "La prochaine attaque est amplifiée", tags: ["rage"], cardUid: card.uid });
+          hero.rage = card.level >= 2 ? 2 : 1;
+          push({ type: "statusApplied", sourceId: card.cardId, targetId: "hero", message: card.level >= 2 ? "Rage double · prochaine attaque +70%" : "La prochaine attaque est amplifiée", tags: ["rage"], cardUid: card.uid });
           break;
         case "double-slash":
           damageEnemy((hero.attack + 8) * power, ["attack", "combo"], card.cardId, card.uid);
           if (enemy.hp > 0) damageEnemy((hero.attack + 8) * power, ["attack", "combo"], card.cardId, card.uid);
+          if (card.level >= 3 && enemy.hp > 0) {
+            push({ type: "statusApplied", sourceId: card.cardId, targetId: enemy.id, message: "Maîtrise · troisième entaille", tags: ["combo", "mastery"], cardUid: card.uid });
+            damageEnemy((hero.attack + 8) * power, ["attack", "combo", "mastery"], card.cardId, card.uid);
+          }
           break;
         case "mend":
           healHero((27 + hero.defense) * power, card.cardId, card.uid);
@@ -348,12 +385,21 @@ function buildCombatPlan(run: RunState): CombatPlan {
     }
 
     if (enemy.hp > 0 && hero.hp > 0) {
-      const raw = Math.max(1, Math.round(enemy.attack - hero.defense * 0.45));
+      const enraged = enemy.intent === "frenzy" && enemy.hp <= enemy.maxHp * .5;
+      const attackMultiplier = enemy.intent === "heavy" ? 1.35 : enemy.intent === "mirror" ? 1.15 : enemy.intent === "boss" ? 1.45 : enraged ? 1.5 : 1;
+      const defenseMultiplier = enemy.intent === "pierce" ? .14 : .45;
+      push({ type: "enemyWindup", sourceId: enemy.id, targetId: "hero", message: `RIPOSTE · ${enemy.intentLabel}${enraged ? " · FRÉNÉSIE" : ""}`, tags: ["enemy-windup", "telegraph", enemy.intent] });
+      const raw = Math.max(1, Math.round(enemy.attack * attackMultiplier - hero.defense * defenseMultiplier));
       const blocked = Math.min(hero.shield, raw);
       const amount = raw - blocked;
       hero.shield -= blocked;
       hero.hp -= amount;
-      push({ type: "damage", sourceId: enemy.id, targetId: "hero", amount, message: blocked > 0 ? `${amount} dégâts · ${blocked} bloqués` : `${amount} dégâts reçus`, tags: ["enemy-attack", ...(blocked > 0 ? ["blocked"] : [])] });
+      push({ type: "damage", sourceId: enemy.id, targetId: "hero", amount, message: blocked > 0 ? `${amount} dégâts · ${blocked} bloqués` : `${amount} dégâts reçus`, tags: ["enemy-attack", enemy.intent, ...(blocked > 0 ? ["blocked"] : [])] });
+      if (enemy.intent === "drain" && amount > 0) {
+        const restored = Math.min(enemy.maxHp - enemy.hp, Math.max(4, Math.round(amount * .55)));
+        enemy.hp += restored;
+        push({ type: "heal", sourceId: enemy.id, targetId: enemy.id, amount: restored, message: `Siphon · l’ennemi récupère ${restored} PV`, tags: ["enemy-heal", "drain"] });
+      }
     }
   }
   if (enemy.hp <= 0) push({ type: "enemyDefeated", targetId: enemy.id, message: "Vague vaincue", tags: ["victory"] });
@@ -395,6 +441,8 @@ export function gameReducer(state: RunState, action: GameAction): RunState {
       }
       return state;
     }
+    case "SKIP_CARD":
+      return state.phase === "cardChoice" && state.activeCards.length >= state.hero.slots ? { ...state, candidateCardId: null, phase: "arranging" } : state;
     case "REORDER_CARDS": {
       if (!["arranging", "cardChoice"].includes(state.phase)) return state;
       const byUid = new Map(state.activeCards.map((card) => [card.uid, card]));
@@ -403,13 +451,13 @@ export function gameReducer(state: RunState, action: GameAction): RunState {
     }
     case "START_COMBAT":
       if (state.phase !== "arranging" || state.activeCards.length === 0) return state;
-      return { ...state, phase: "resolvingPlayerCards", combatPlan: buildCombatPlan(state), combatCursor: 0, eventLog: [], lastEvent: null };
+      return { ...state, phase: "resolvingPlayerCards", combatPlan: buildCombatPlan(state), combatCursor: 0, lastEvent: null };
     case "ADVANCE_COMBAT": {
       if (!state.combatPlan || !["resolvingPlayerCards", "resolvingEnemyTurn"].includes(state.phase)) return state;
       if (state.combatCursor < state.combatPlan.events.length) {
         const event = state.combatPlan.events[state.combatCursor];
-        const eventLog = [...state.eventLog, event].slice(-18);
-        return { ...state, combatCursor: state.combatCursor + 1, eventLog, lastEvent: event, phase: event.tags?.includes("enemy-attack") ? "resolvingEnemyTurn" : "resolvingPlayerCards" };
+        const eventLog = [...state.eventLog, event].slice(-64);
+        return { ...state, combatCursor: state.combatCursor + 1, eventLog, lastEvent: event, phase: event.tags?.some((tag) => tag === "enemy-attack" || tag === "enemy-windup") ? "resolvingEnemyTurn" : "resolvingPlayerCards" };
       }
       const plan = state.combatPlan;
       // Les cartes temporaires sont marquées comme jouées dans la résolution, puis
