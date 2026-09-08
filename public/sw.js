@@ -1,10 +1,10 @@
-const VERSION = "v9";
+const VERSION = "v11";
 const SHELL_CACHE = `emberchain-shell-${VERSION}`;
 const RUNTIME_CACHE = `emberchain-runtime-${VERSION}`;
 const scopeUrl = new URL("./", self.registration.scope);
 const withinScope = (url) => url.origin === scopeUrl.origin && url.href.startsWith(scopeUrl.href);
 const appUrl = (path) => new URL(path, scopeUrl).href;
-const shell = ["./", "./index.html", "./manifest.webmanifest", "./icon.svg", "./assets/ember-knight.png", "./assets/forge-arena-v2.png", "./assets/goblin-raider-v2.png", "./assets/cards-fire-atlas.png", "./assets/cards-attack-atlas.png", "./assets/cards-support-atlas.png", "./assets/cards-equipment-atlas.png"];
+const shell = ["./", "./index.html", "./manifest.webmanifest", "./icon.svg", "./assets/ember-knight.png", "./assets/forge-arena-v2.png", "./assets/goblin-raider-v2.png", "./assets/enemy-roster-v1.png", "./assets/cards-fire-atlas.png", "./assets/cards-attack-atlas.png", "./assets/cards-support-atlas.png", "./assets/cards-equipment-atlas.png"];
 
 const precacheGeneratedAssets = async (cache) => {
   const indexUrl = appUrl("./index.html");

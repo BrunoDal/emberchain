@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CARD_DEFINITIONS, createEnemy, createInitialRun, gameReducer, getCardEffectLabel, MAX_ACTIVE_SLOTS, RunState } from "./game";
+import { CARD_DEFINITIONS, createEnemy, createInitialRun, gameReducer, getCardEffectLabel, getSequenceForecast, loadRun, MAX_ACTIVE_SLOTS, RunState } from "./game";
 
 function advanceUntilStable(state: RunState) {
   let current = state;
@@ -170,5 +170,57 @@ describe("Emberchain run loop", () => {
     expect(getCardEffectLabel("rage", 2)).toContain("70%");
     expect(getCardEffectLabel("double-slash", 3)).toContain("3 ×");
     expect(getCardEffectLabel("guard", 3)).toContain("soin");
+  });
+
+  it("previews the real order payoff and the enemy threat", () => {
+    const base = createInitialRun();
+    const run: RunState = {
+      ...base,
+      activeCards: [
+        { uid: "mark", cardId: "ember-brand", level: 1 },
+        { uid: "strike", cardId: "strike", level: 1 },
+        { uid: "rage", cardId: "rage", level: 2 },
+        { uid: "slash", cardId: "double-slash", level: 1 },
+      ],
+      currentEnemy: { ...createEnemy(1), hp: 999, maxHp: 999 },
+    };
+    const forecast = getSequenceForecast(run);
+    expect(forecast.steps[0].link).toContain("Prépare");
+    expect(forecast.steps[1].outcome).toContain("dégâts");
+    expect(forecast.steps[1].link).toContain("Marque");
+    expect(forecast.damageMax).toBeGreaterThanOrEqual(forecast.damageExpected);
+    expect(forecast.incomingDamage).toBeGreaterThan(0);
+  });
+
+  it("calls out a preparation that survives the visible sequence", () => {
+    const base = createInitialRun();
+    const forecast = getSequenceForecast({ ...base, activeCards: [{ uid: "mark", cardId: "ember-brand", level: 1 }], currentEnemy: { ...createEnemy(1), hp: 999, maxHp: 999 } });
+    expect(forecast.unspentPreparation).toContain("Marque prête");
+  });
+
+  it("includes defensive payoff in the forecast before the riposte", () => {
+    const base = createInitialRun();
+    const run: RunState = {
+      ...base,
+      hero: { ...base.hero, hp: 60, maxHp: 120 },
+      activeCards: [{ uid: "guard", cardId: "guard", level: 1 }],
+      currentEnemy: { ...createEnemy(1), hp: 999, maxHp: 999 },
+    };
+    const forecast = getSequenceForecast(run);
+    expect(forecast.shield).toBeGreaterThan(0);
+    expect(forecast.incomingDamage).toBeLessThan(run.currentEnemy.attack);
+  });
+
+  it("repairs a legacy save before it reaches the mobile UI", () => {
+    const base = createInitialRun();
+    vi.stubGlobal("localStorage", { getItem: () => JSON.stringify({ ...base, resources: undefined, candidateCardId: "missing", activeCards: [{ uid: "legacy", cardId: "strike", level: 99 }] }) });
+    try {
+      const loaded = loadRun();
+      expect(loaded?.resources.essence).toBe(0);
+      expect(loaded?.candidateCardId).toBeNull();
+      expect(loaded?.activeCards[0].level).toBe(3);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

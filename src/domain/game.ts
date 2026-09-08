@@ -89,6 +89,33 @@ export interface CombatEvent {
   heroRageAfter: number;
 }
 
+export interface SequenceForecastStep {
+  uid: string;
+  cardId: string;
+  name: string;
+  outcome: string;
+  link: string | null;
+  damageMin: number;
+  damageMax: number;
+  damageExpected: number;
+  shield: number;
+  healing: number;
+}
+
+export interface SequenceForecast {
+  steps: SequenceForecastStep[];
+  damageMin: number;
+  damageMax: number;
+  damageExpected: number;
+  shield: number;
+  healing: number;
+  burn: number;
+  comboCount: number;
+  enemyHpAfter: number;
+  incomingDamage: number;
+  unspentPreparation: string | null;
+}
+
 interface CombatPlan {
   events: CombatEvent[];
   finalHero: HeroState;
@@ -195,6 +222,142 @@ export function getCardEffectLabel(cardId: string, level = 1): string {
     "blood-oath": "+25% attaques sous 50% PV",
   };
   return effects[cardId] ?? definition.description;
+}
+
+/**
+ * A deterministic preview of the same ordered sequence used by the combat
+ * planner. Crits are represented as a range and an expected value so the
+ * player can understand the plan without being promised a random result.
+ */
+export function getSequenceForecast(run: RunState): SequenceForecast {
+  const hero = { ...run.hero, shield: 0, rage: 0 };
+  const enemy = { ...run.currentEnemy };
+  const equipment = run.activeCards.filter((card) => getCardDefinition(card.cardId).kind === "equipment");
+  const has = (id: string) => equipment.some((card) => card.cardId === id);
+  const levelOf = (id: string) => equipment.filter((card) => card.cardId === id).reduce((sum, card) => sum + card.level, 0);
+  const fireMultiplier = 1 + levelOf("cinder-amulet") * 0.2 + levelOf("flame-core") * 0.3;
+  const shieldMultiplier = 1 + levelOf("royal-aegis") * 0.3 + levelOf("fortress-heart") * 0.5;
+  const critChance = Math.min(0.8, hero.crit + levelOf("crit-sigil") * 0.12 + levelOf("duelist-glove") * 0.08);
+  const critMultiplier = 1.8 * (has("berserker-blade") ? 1.3 : 1);
+  const steps: SequenceForecastStep[] = [];
+  let totalMin = 0;
+  let totalMax = 0;
+  let totalExpected = 0;
+  let totalShield = 0;
+  let totalHealing = 0;
+  let combo = 0;
+  let pendingMark = false;
+  let pendingRage = 0;
+  let lastPreparation = "";
+
+  const addStep = (card: OwnedCard, outcome: string, link: string | null, damage = { min: 0, max: 0, expected: 0 }, shield = 0, healing = 0) => {
+    steps.push({ uid: card.uid, cardId: card.cardId, name: getCardDefinition(card.cardId).name, outcome, link, damageMin: damage.min, damageMax: damage.max, damageExpected: damage.expected, shield, healing });
+    totalMin += damage.min;
+    totalMax += damage.max;
+    totalExpected += damage.expected;
+    totalShield += shield;
+    totalHealing += healing;
+  };
+
+  const damage = (card: OwnedCard, base: number, tags: string[], label: string, link: string | null = null) => {
+    const power = 1 + (card.level - 1) * 0.32;
+    const fire = tags.includes("fire");
+    const rageMultiplier = 1 + pendingRage * 0.35;
+    const bloodOathMultiplier = has("blood-oath") && hero.hp <= hero.maxHp * 0.5 ? 1.25 : 1;
+    const defenseMultiplier = tags.includes("piercing") ? 0.05 : 0.35;
+    const executeMultiplier = tags.includes("execute") && enemy.hp <= enemy.maxHp * 0.4 ? 1.7 : 1;
+    const comboMultiplier = has("duelist-glove") && combo >= 2 ? 1.15 : 1;
+    const regular = Math.max(1, Math.round((base * power * (fire ? fireMultiplier : 1) * rageMultiplier * bloodOathMultiplier * executeMultiplier * comboMultiplier) - enemy.defense * defenseMultiplier));
+    const critical = Math.round(regular * critMultiplier);
+    const expected = Math.round(regular * (1 + critChance * (critMultiplier - 1)));
+    const prepared = pendingMark;
+    const finalLink = link ?? (prepared ? "Profite de la Marque braise" : lastPreparation || null);
+    const amount = { min: regular, max: critical, expected };
+    enemy.hp -= expected;
+    combo += 1;
+    pendingMark = false;
+    pendingRage = 0;
+    lastPreparation = "";
+    addStep(card, `${label} · ≈${expected} dégâts`, finalLink, amount);
+  };
+
+  for (const card of run.activeCards) {
+    const definition = getCardDefinition(card.cardId);
+    const power = 1 + (card.level - 1) * 0.32;
+    if (definition.kind === "equipment") {
+      const link = definition.tags.includes("fire") ? "Renforce les cartes Feu" : definition.tags.includes("crit") ? "Renforce les critiques" : definition.tags.includes("defense") ? "Renforce les boucliers" : "Reste actif pendant la chaîne";
+      addStep(card, "Passif actif", link);
+      lastPreparation = link;
+      continue;
+    }
+    if (enemy.hp <= 0) break;
+    switch (card.cardId) {
+      case "ember-brand":
+        pendingMark = true;
+        lastPreparation = "Marque prête pour la prochaine frappe";
+        addStep(card, "Marque la cible · +15 prochaine frappe", "Prépare la prochaine attaque");
+        break;
+      case "strike":
+        damage(card, (hero.attack + 24) + (pendingMark ? 15 : 0), ["attack", ...(pendingMark ? ["prepared"] : [])], pendingMark ? "Frappe préparée" : "Frappe directe");
+        break;
+      case "fireball":
+        damage(card, 31 + hero.attack * 0.55, ["fire", "spell"], "Boule de feu");
+        enemy.burn = Math.max(enemy.burn, 2 + card.level);
+        break;
+      case "guard": {
+        const value = Math.round((25 + hero.defense * 1.5) * power * shieldMultiplier);
+        hero.shield += value;
+        const healed = card.level >= 3 ? Math.round(8 * power) : 0;
+        hero.hp = Math.min(hero.maxHp, hero.hp + healed);
+        addStep(card, `Bouclier +${value}`, "Prépare la riposte", { min: 0, max: 0, expected: 0 }, value, healed);
+        break;
+      }
+      case "rage":
+        pendingRage = card.level >= 2 ? 2 : 1;
+        addStep(card, `Prochaine attaque +${pendingRage * 35}%`, "Amplifie la prochaine attaque");
+        break;
+      case "double-slash":
+        damage(card, hero.attack + 8, ["attack", "combo"], "Entaille 1/2");
+        if (enemy.hp > 0) damage(card, hero.attack + 8, ["attack", "combo"], "Entaille 2/2", "Enchaîne le premier impact");
+        if (card.level >= 3 && enemy.hp > 0) damage(card, hero.attack + 8, ["attack", "combo", "mastery"], "Entaille 3/3", "Maîtrise de la carte");
+        break;
+      case "mend": {
+        const healed = Math.max(0, Math.min(hero.maxHp - hero.hp, Math.round((27 + hero.defense) * power)));
+        hero.hp += healed;
+        addStep(card, `Récupère +${healed} PV`, "Stabilise le héros", { min: 0, max: 0, expected: 0 }, 0, healed);
+        break;
+      }
+      case "burning-edge":
+        damage(card, hero.attack + 18, ["attack", "fire"], "Lame ardente");
+        enemy.burn = Math.max(enemy.burn, 3 + card.level);
+        break;
+      case "meteor":
+        damage(card, 53 + hero.attack * 0.8, ["fire", "spell", "critical"], "Météore");
+        enemy.burn = Math.max(enemy.burn, 3 + card.level);
+        break;
+      case "ember-surge":
+        damage(card, 24 + hero.attack * 0.45 + (enemy.burn > 0 ? 22 : 0), ["fire", "combo"], "Sursaut de braise", enemy.burn > 0 ? "Exploite la Brûlure" : null);
+        enemy.burn = Math.max(enemy.burn, 2 + card.level);
+        break;
+      case "piercing-lunge":
+        damage(card, hero.attack + 30, ["attack", "piercing"], "Estoc perforant");
+        break;
+      case "execution":
+        damage(card, hero.attack + 25, ["attack", "execute"], enemy.hp <= enemy.maxHp * 0.4 ? "Coup de grâce · finisseur" : "Coup de grâce");
+        break;
+    }
+  }
+
+  if (enemy.hp > 0 && enemy.burn > 0) {
+    const tick = 9 + enemy.burn * 3;
+    enemy.hp -= tick;
+    totalMin += tick;
+    totalMax += tick;
+    totalExpected += tick;
+  }
+  const incomingDamage = enemy.hp > 0 ? Math.max(0, Math.round(enemy.attack * (enemy.intent === "heavy" ? 1.35 : enemy.intent === "mirror" ? 1.15 : enemy.intent === "boss" ? 1.45 : enemy.intent === "frenzy" && enemy.hp <= enemy.maxHp * .5 ? 1.5 : 1) - hero.defense * (enemy.intent === "pierce" ? .14 : .45)) - hero.shield) : 0;
+  const unspentPreparation = pendingRage > 0 ? `Rage prête · +${pendingRage * 35}% à la prochaine attaque` : pendingMark ? "Marque prête · +15 à la prochaine frappe" : null;
+  return { steps, damageMin: Math.max(0, totalMin), damageMax: Math.max(0, totalMax), damageExpected: Math.max(0, totalExpected), shield: totalShield, healing: totalHealing, burn: enemy.burn, comboCount: combo, enemyHpAfter: Math.max(0, Math.round(enemy.hp)), incomingDamage, unspentPreparation };
 }
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -504,8 +667,40 @@ export function loadRun(): RunState | null {
   try {
     const raw = localStorage.getItem("emberchain-run");
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as RunState;
-    if (!parsed?.hero || !parsed?.activeCards || !parsed?.currentEnemy) return null;
-    return { ...parsed, saveVersion: 2, round: parsed.round ?? 1, combatPlan: null, combatCursor: 0, lastEvent: null, phase: ["cardChoice", "arranging", "victory", "levelUp", "defeat"].includes(parsed.phase) ? parsed.phase : "arranging" };
+    const parsed = JSON.parse(raw) as Partial<RunState>;
+    if (!parsed?.hero || !Array.isArray(parsed.activeCards) || !parsed.currentEnemy) return null;
+    const wave = Number.isFinite(parsed.wave) ? Math.max(1, Math.floor(parsed.wave as number)) : 1;
+    const fallback = createInitialRun();
+    const validCard = (value: unknown): value is OwnedCard => {
+      if (!value || typeof value !== "object") return false;
+      const card = value as Partial<OwnedCard>;
+      return typeof card.cardId === "string" && cardMap.has(card.cardId) && typeof card.uid === "string" && card.uid.length > 0;
+    };
+    const activeCards = parsed.activeCards.filter(validCard).map((card) => ({ ...card, level: Math.max(1, Math.min(3, Math.floor(card.level || 1))) }));
+    if (!activeCards.length) return null;
+    const hero = { ...fallback.hero, ...(parsed.hero as Partial<HeroState>) };
+    const enemy = { ...createEnemy(wave), ...(parsed.currentEnemy as Partial<EnemyState>) };
+    const phase = ["cardChoice", "arranging", "victory", "levelUp", "defeat"].includes(parsed.phase ?? "") ? parsed.phase as GamePhase : "arranging";
+    return {
+      ...fallback,
+      ...parsed,
+      saveVersion: 2,
+      phase,
+      wave,
+      round: Number.isFinite(parsed.round) ? Math.max(1, Math.floor(parsed.round as number)) : 1,
+      hero: { ...hero, hp: Math.max(0, Math.min(hero.maxHp, hero.hp)), shield: Math.max(0, hero.shield || 0), rage: Math.max(0, hero.rage || 0) },
+      activeCards,
+      inventory: Array.isArray(parsed.inventory) ? parsed.inventory.filter(validCard) : [],
+      candidateCardId: typeof parsed.candidateCardId === "string" && cardMap.has(parsed.candidateCardId) ? parsed.candidateCardId : null,
+      currentEnemy: { ...enemy, hp: Math.max(0, Math.min(enemy.maxHp, enemy.hp)), burn: Math.max(0, enemy.burn || 0), marked: Boolean(enemy.marked) },
+      pendingUpgradeOptions: Array.isArray(parsed.pendingUpgradeOptions) ? parsed.pendingUpgradeOptions : [],
+      pendingUpgradeCount: Math.max(0, Math.floor(parsed.pendingUpgradeCount || 0)),
+      combatPlan: null,
+      combatCursor: 0,
+      lastEvent: null,
+      eventLog: Array.isArray(parsed.eventLog) ? parsed.eventLog.slice(-64) : [],
+      reward: parsed.reward ?? null,
+      resources: { essence: Math.max(0, Math.floor(parsed.resources?.essence || 0)) },
+    };
   } catch { return null; }
 }
