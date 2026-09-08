@@ -1,4 +1,4 @@
-const VERSION = "v11";
+const VERSION = "v12";
 const SHELL_CACHE = `emberchain-shell-${VERSION}`;
 const RUNTIME_CACHE = `emberchain-runtime-${VERSION}`;
 const scopeUrl = new URL("./", self.registration.scope);
