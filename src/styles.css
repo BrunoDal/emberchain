@@ -289,3 +289,8 @@ button:focus-visible{outline:3px solid #ffe3a6;outline-offset:3px}
 .forge-confirm:disabled{opacity:.48;filter:saturate(.55)}
 @media(max-width:430px){.forge-preview{padding:5px 7px;gap:2px}.forge-preview span{font-size:9px}.forge-confirm{min-height:36px}}
 @media(max-width:430px) and (max-height:700px){.forge-option,.forge-card-option{min-height:38px}.forge-preview{padding:4px 6px}.forge-preview span{font-size:9px}.forge-confirm{min-height:34px;font-size:10px}}
+
+/* Keep orange call-to-action text readable across the full gradient. */
+.home-primary,.play-button,.sheet-primary,.forge-confirm{background:linear-gradient(105deg,#ed9c56 0%,#f3a45c 56%,#ffc783 100%);color:#21160f}
+.home-primary small,.home-actions .home-primary small,.play-button small{color:#21160f}
+.home-primary b,.play-button b,.sheet-primary b,.forge-confirm b{color:#21160f}
