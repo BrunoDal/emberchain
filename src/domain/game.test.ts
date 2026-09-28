@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CARD_DEFINITIONS, createEnemy, createInitialRun, gameReducer, getCardEffectLabel, getSequenceForecast, loadRun, MAX_ACTIVE_SLOTS, RunState } from "./game";
+import { CARD_DEFINITIONS, createEnemy, createInitialRun, gameReducer, getCardEffectLabel, getSequenceForecast, loadRun, MAX_ACTIVE_SLOTS, RunState, serializeRun, FORGE_CARD_COST, FORGE_HEAL_COST } from "./game";
 
 function advanceUntilStable(state: RunState) {
   let current = state;
@@ -55,6 +55,12 @@ describe("Emberchain run loop", () => {
     const fused = gameReducer(run, { type: "CHOOSE_CARD", action: "fuse", targetUid: target.uid });
     expect(fused.phase).toBe("arranging");
     expect(fused.activeCards[0].level).toBe(2);
+  });
+
+  it("rejects fusing an identical card that is already at the level cap", () => {
+    const base = createInitialRun();
+    const run: RunState = { ...base, phase: "cardChoice", candidateCardId: "strike", activeCards: [{ uid: "mastered", cardId: "strike", level: 3 }] };
+    expect(gameReducer(run, { type: "CHOOSE_CARD", action: "fuse", targetUid: "mastered" })).toBe(run);
   });
 
   it("starts each new wave with the current hand and no preliminary draw", () => {
@@ -136,6 +142,62 @@ describe("Emberchain run loop", () => {
     expect(getCardEffectLabel("burning-edge", 2)).toContain("brûlure 5");
     expect(getCardEffectLabel("rage", 2)).not.toContain("×1.32");
     expect(getCardEffectLabel("ember-brand", 2)).not.toContain("×1.32");
+    expect(getCardEffectLabel("berserker-blade", 2)).toContain("+60% dégâts critiques");
+    expect(getCardEffectLabel("cinder-amulet", 2)).toContain("+40% dégâts de feu");
+    expect(getCardEffectLabel("royal-aegis", 2)).toContain("+60% boucliers");
+    expect(getCardEffectLabel("crit-sigil", 2)).toContain("+24% critique");
+    expect(getCardEffectLabel("flame-core", 2)).toContain("+60% dégâts de feu");
+    expect(getCardEffectLabel("duelist-glove", 2)).toContain("+16% critique · combos +30%");
+    expect(getCardEffectLabel("fortress-heart", 2)).toContain("+100% boucliers");
+    expect(getCardEffectLabel("blood-oath", 2)).toContain("+50% attaques sous 50% PV");
+  });
+
+  it("scales blood oath upgrades in forecast and resolved damage", () => {
+    const base = createInitialRun();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.99);
+    try {
+      const resultAt = (oathLevel: number) => {
+        const run: RunState = {
+          ...base,
+          hero: { ...base.hero, hp: 40, maxHp: 120, attack: 20, crit: 0 },
+          activeCards: [{ uid: "oath", cardId: "blood-oath", level: oathLevel }, { uid: "strike", cardId: "strike", level: 1 }],
+          currentEnemy: { ...createEnemy(1), hp: 999, maxHp: 999, defense: 0 },
+        };
+        const forecast = getSequenceForecast(run);
+        const resolved = advanceUntilStable(gameReducer(run, { type: "START_COMBAT" }));
+        const damage = resolved.eventLog.find((event) => event.cardUid === "strike" && event.type === "damage")?.amount;
+        return { forecast, damage };
+      };
+      const levelOne = resultAt(1);
+      const levelTwo = resultAt(2);
+      expect(levelOne.damage).toBe(levelOne.forecast.damageMin);
+      expect(levelTwo.damage).toBe(levelTwo.forecast.damageMin);
+      expect(levelTwo.damage).toBeGreaterThan(levelOne.damage ?? 0);
+    } finally { random.mockRestore(); }
+  });
+
+  it("scales berserker critical damage in forecast and resolution", () => {
+    const base = createInitialRun();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      const resultAt = (bladeLevel: number) => {
+        const run: RunState = {
+          ...base,
+          hero: { ...base.hero, attack: 20 },
+          activeCards: [{ uid: "blade", cardId: "berserker-blade", level: bladeLevel }, { uid: "strike", cardId: "strike", level: 1 }],
+          currentEnemy: { ...createEnemy(1), hp: 999, maxHp: 999, defense: 0 },
+        };
+        const forecast = getSequenceForecast(run);
+        const resolved = advanceUntilStable(gameReducer(run, { type: "START_COMBAT" }));
+        const damage = resolved.eventLog.find((event) => event.cardUid === "strike" && event.type === "damage")?.amount;
+        return { forecast, damage };
+      };
+      const levelOne = resultAt(1);
+      const levelTwo = resultAt(2);
+      expect(levelOne.damage).toBe(levelOne.forecast.damageMax);
+      expect(levelTwo.damage).toBe(levelTwo.forecast.damageMax);
+      expect(levelTwo.damage).toBeGreaterThan(levelOne.damage ?? 0);
+    } finally { random.mockRestore(); }
   });
 
   it("applies the berserker bonus to the real critical amount", () => {
@@ -166,10 +228,101 @@ describe("Emberchain run loop", () => {
     expect(createEnemy(2).intentLabel).toContain("Siphon");
   });
 
+  it("alternates deterministic enemy intentions and resolves the announced variation", () => {
+    const base = createInitialRun();
+    const run: RunState = { ...base, hero: { ...base.hero, hp: 1000, maxHp: 1000, defense: 0 }, activeCards: [{ uid: "only", cardId: "guard", level: 1 }], currentEnemy: { ...createEnemy(1), hp: 999, maxHp: 999, attack: 20 } };
+    expect(run.currentEnemy.intent).toBe("raid");
+    let next = advanceUntilStable(gameReducer(run, { type: "START_COMBAT" }));
+    expect(next.round).toBe(2);
+    expect(next.currentEnemy.intent).toBe("pierce");
+    const forecast = getSequenceForecast(next);
+    next = gameReducer(next, { type: "CHOOSE_CARD", action: "keep" });
+    const resolved = advanceUntilStable(gameReducer(next, { type: "START_COMBAT" }));
+    const impact = resolved.eventLog.find((event) => event.round === 2 && event.tags?.includes("enemy-attack"));
+    expect(impact?.tags).toContain("pierce");
+    expect(impact?.amount).toBe(forecast.incomingDamage);
+    expect(resolved.currentEnemy.intent).toBe("raid");
+  });
+
+  it("keeps boss alternate intent weaker than its opening and migrates intent from round", () => {
+    const boss = createEnemy(5);
+    const queen = createEnemy(10);
+    const base = createInitialRun();
+    const run: RunState = { ...base, phase: "victory", wave: 5, round: 2, currentEnemy: { ...boss, intent: "boss", intentLabel: "Écrasement · +45% dégâts" } };
+    vi.stubGlobal("localStorage", { getItem: () => JSON.stringify(run) });
+    try {
+      const loaded = loadRun();
+      expect(loaded?.currentEnemy.intent).toBe("mirror");
+      expect(loaded?.currentEnemy.intentLabel).toContain("+15%");
+      vi.stubGlobal("localStorage", { getItem: () => JSON.stringify({ ...run, wave: 10, round: 3, currentEnemy: { ...queen, intent: "mirror", intentLabel: "Déferlement · +15% dégâts" } }) });
+      expect(loadRun()?.currentEnemy.intent).toBe("boss");
+      expect(loadRun()?.currentEnemy.intentLabel).toContain("Déluge de feu");
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("spends exact forge costs on capped healing and an exact card upgrade, and persists the result", () => {
+    const base = createInitialRun();
+    const victory: RunState = { ...base, phase: "victory", resources: { essence: 7 }, hero: { ...base.hero, hp: 110, maxHp: 120 }, activeCards: [{ uid: "chosen", cardId: "strike", level: 2 }, { uid: "other", cardId: "strike", level: 1 }] };
+    const healed = gameReducer(victory, { type: "FORGE_HEAL" });
+    expect(healed.hero.hp).toBe(120);
+    expect(healed.resources.essence).toBe(7 - FORGE_HEAL_COST);
+    const upgraded = gameReducer(healed, { type: "FORGE_CARD", uid: "chosen" });
+    expect(upgraded.activeCards.map((card) => [card.uid, card.level])).toEqual([["chosen", 3], ["other", 1]]);
+    expect(upgraded.resources.essence).toBe(0);
+    vi.stubGlobal("localStorage", { getItem: () => serializeRun(upgraded) });
+    try { expect(loadRun()?.activeCards[0].level).toBe(3); expect(loadRun()?.resources.essence).toBe(0); }
+    finally { vi.unstubAllGlobals(); }
+  });
+
+  it("rejects forge actions with invalid phase, insufficient essence, full health or card target", () => {
+    const base = createInitialRun();
+    const victory: RunState = { ...base, phase: "victory", resources: { essence: FORGE_CARD_COST }, hero: { ...base.hero, hp: base.hero.maxHp } };
+    expect(gameReducer(victory, { type: "FORGE_HEAL" })).toBe(victory);
+    expect(gameReducer({ ...victory, resources: { essence: FORGE_HEAL_COST - 1 }, hero: { ...victory.hero, hp: 1 } }, { type: "FORGE_HEAL" }).resources.essence).toBe(FORGE_HEAL_COST - 1);
+    expect(gameReducer(victory, { type: "FORGE_CARD", uid: "missing" })).toBe(victory);
+    expect(gameReducer({ ...victory, phase: "arranging" }, { type: "FORGE_CARD", uid: victory.activeCards[0].uid }).resources).toEqual(victory.resources);
+    expect(gameReducer({ ...victory, activeCards: victory.activeCards.map((card) => ({ ...card, level: 3 })) }, { type: "FORGE_CARD", uid: victory.activeCards[0].uid }).resources).toEqual(victory.resources);
+  });
+
   it("unlocks mastery effects on upgraded cards", () => {
     expect(getCardEffectLabel("rage", 2)).toContain("70%");
+    expect(getCardEffectLabel("rage", 3)).toContain("105%");
+    expect(getCardEffectLabel("ember-brand", 3)).toContain("+45");
     expect(getCardEffectLabel("double-slash", 3)).toContain("3 ×");
     expect(getCardEffectLabel("guard", 3)).toContain("soin");
+    for (const cardId of ["strike", "fireball", "guard", "double-slash", "mend", "burning-edge", "meteor", "ember-surge", "piercing-lunge", "execution"]) {
+      expect(getCardEffectLabel(cardId, 2), cardId).toContain("Puissance ×1,32");
+    }
+  });
+
+  it("makes every level of rage and ember brand stronger in forecast and combat", () => {
+    const base = createInitialRun();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.99);
+    try {
+      const dealtAt = (setupCard: "rage" | "ember-brand", level: number) => {
+        const run: RunState = {
+          ...base,
+          hero: { ...base.hero, attack: 20, crit: 0 },
+          activeCards: [
+            { uid: "setup", cardId: setupCard, level },
+            { uid: "strike", cardId: "strike", level: 1 },
+          ],
+          currentEnemy: { ...createEnemy(1), hp: 999, maxHp: 999, defense: 0 },
+        };
+        const forecast = getSequenceForecast(run);
+        const resolved = advanceUntilStable(gameReducer(run, { type: "START_COMBAT" }));
+        const damage = resolved.eventLog.find((event) => event.cardUid === "strike" && event.type === "damage")?.amount;
+        expect(damage).toBe(forecast.damageMin);
+        return damage ?? 0;
+      };
+      for (const setupCard of ["rage", "ember-brand"] as const) {
+        const tierOne = dealtAt(setupCard, 1);
+        const tierTwo = dealtAt(setupCard, 2);
+        const tierThree = dealtAt(setupCard, 3);
+        expect(tierTwo).toBeGreaterThan(tierOne);
+        expect(tierThree).toBeGreaterThan(tierTwo);
+      }
+    } finally { random.mockRestore(); }
   });
 
   it("previews the real order payoff and the enemy threat", () => {
